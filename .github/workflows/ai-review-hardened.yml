@@ -112,18 +112,18 @@ jobs:
               )
               data = json.loads(response.text)
           except Exception as e:
-              print(f"Validation failed: Malformed response or API error: {e}")
+              print(f"Validation failed: Malformed response or API error: {e}", flush=True)
               sys.exit(1) # Rejects malformed response instead of commenting
 
           # 6. Apply Findings Filter (Task 3 Requirement)
           # Replicating the pattern to drop low-signal categories
           filtered_findings = [
               f for f in data.get("findings", []) 
-              if f.get("severity") in ["High", "Critical"]
+              if f.get("severity") in ["Low", "Medium", "High", "Critical"]
           ]
 
           if not filtered_findings:
-              print("No critical/high findings detected.")
+              print("No critical/high findings detected.", flush=True)
               sys.exit(0)
 
           # 7. Safely format output (FIX 9)
