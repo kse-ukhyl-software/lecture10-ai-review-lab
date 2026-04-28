@@ -1,0 +1,146 @@
+# Pattern Citation: 
+# This workflow implements the structured output, findings filter, and scoped 
+# permissions patterns found in anthropics/claude-code-security-review.
+# External contributor approval is handled natively by GitHub's 
+# "Require approval for all outside collaborators" setting when using the 
+# pull_request trigger, as documented in the reference action's README.
+
+name: AI Review (Hardened)
+
+# FIX 1: Use pull_request, not pull_request_target.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# FIX 2: Explicit, least-privilege permissions.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-review:
+    if: ${{ !startsWith(github.event.pull_request.head.ref, 'demo-insecure/') && !startsWith(github.event.pull_request.head.ref, 'demo-exfil/') }}
+    runs-on: ubuntu-latest
+    
+    # FIX 4: Explicit timeout to prevent denial-of-wallet.
+    timeout-minutes: 10
+
+    steps:
+      # FIX 5: Bounded fetch-depth.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2 
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install google-genai
+
+      - name: Run AI Security Review
+        # FIX 3: API key is scoped strictly to this execution step.
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python - << 'EOF'
+          import os
+          import sys
+          import json
+          import subprocess
+          from google import genai
+          from google.genai import types
+
+          # 1. Setup API (Using the new genai.Client)
+          api_key = os.environ.get("GEMINI_API_KEY")
+          if not api_key:
+              print("GEMINI_API_KEY missing.")
+              sys.exit(1)
+          client = genai.Client(api_key=api_key)
+
+          # 2. Safely get the diff
+          base_sha = os.environ.get("BASE_SHA")
+          subprocess.run(["git", "fetch", "origin", base_sha], check=True)
+          diff = subprocess.check_output(["git", "diff", f"{base_sha}..HEAD"], text=True)
+
+          # 3. Define Strict JSON Schema (FIX 8)
+          schema = {
+              "type": "OBJECT",
+              "properties": {
+                  "findings": {
+                      "type": "ARRAY",
+                      "items": {
+                          "type": "OBJECT",
+                          "properties": {
+                              "file": {"type": "STRING"},
+                              "line": {"type": "INTEGER"},
+                              "severity": {"type": "STRING", "description": "Low, Medium, High, Critical"},
+                              "description": {"type": "STRING"}
+                          },
+                          "required": ["file", "line", "severity", "description"]
+                      }
+                  }
+              },
+              "required": ["findings"]
+          }
+
+          # 4. Prompt with Strict Boundaries (FIX 6 & 7)
+          prompt = f"""
+          You are a strict security reviewer. Analyze the following git diff for security vulnerabilities.
+          Do not include style issues. Output ONLY valid JSON matching the schema.
+
+          [BEGIN PR DIFF]
+          {diff}
+          [END PR DIFF]
+          """
+
+          # 5. Call API and Enforce Validation (FIX 8)
+          try:
+              # Updated to use client.models.generate_content and types.GenerateContentConfig
+              response = client.models.generate_content(
+                  model='gemini-2.5-flash',
+                  contents=prompt,
+                  config=types.GenerateContentConfig(
+                      response_mime_type="application/json",
+                      response_schema=schema,
+                      temperature=0.0
+                  )
+              )
+              data = json.loads(response.text)
+          except Exception as e:
+              print(f"Validation failed: Malformed response or API error: {e}")
+              sys.exit(1) # Rejects malformed response instead of commenting
+
+          # 6. Apply Findings Filter (Task 3 Requirement)
+          # Replicating the pattern to drop low-signal categories
+          filtered_findings = [
+              f for f in data.get("findings", []) 
+              if f.get("severity") in ["High", "Critical"]
+          ]
+
+          if not filtered_findings:
+              print("No critical/high findings detected.")
+              sys.exit(0)
+
+          # 7. Safely format output (FIX 9)
+          comment = "### 🔒 Security Review Findings\n\n"
+          for f in filtered_findings:
+              comment += f"- **{f['file']}:{f['line']}** ({f['severity']}): {f['description']}\n"
+
+          with open("/tmp/comment.md", "w") as out:
+              out.write(comment)
+          EOF
+
+      - name: Post review comment
+        if: hashFiles('/tmp/comment.md') != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/comment.md
