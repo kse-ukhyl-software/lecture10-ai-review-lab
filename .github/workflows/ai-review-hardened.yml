@@ -134,6 +134,7 @@ jobs:
 
           with open("/tmp/comment.md", "w") as out:
               out.write(comment)
+          EOF
 
       - name: Post review comment
         if: hashFiles('/tmp/comment.md') != ''
