@@ -115,25 +115,25 @@ jobs:
               print(f"Validation failed: Malformed response or API error: {e}", flush=True)
               sys.exit(1) # Rejects malformed response instead of commenting
 
-          # 6. Apply Findings Filter (Task 3 Requirement)
-          # Replicating the pattern to drop low-signal categories
+          # 6. Apply Findings Filter 
+          # (Allowing all severities temporarily so you can see everything)
           filtered_findings = [
               f for f in data.get("findings", []) 
               if f.get("severity") in ["Low", "Medium", "High", "Critical"]
           ]
 
-          if not filtered_findings:
-              print("No critical/high findings detected.", flush=True)
-              sys.exit(0)
-
-          # 7. Safely format output (FIX 9)
+          # 7. Safely format output AND ALWAYS WRITE THE FILE
           comment = "### 🔒 Security Review Findings\n\n"
-          for f in filtered_findings:
-              comment += f"- **{f['file']}:{f['line']}** ({f['severity']}): {f['description']}\n"
+          
+          if not filtered_findings:
+              comment += "*No vulnerabilities detected. (Or the AI was tricked by prompt injection!)*\n"
+              print("Empty findings array. Writing empty comment file...", flush=True)
+          else:
+              for f in filtered_findings:
+                  comment += f"- **{f['file']}:{f['line']}** ({f['severity']}): {f['description']}\n"
 
           with open("/tmp/comment.md", "w") as out:
               out.write(comment)
-          EOF
 
       - name: Post review comment
         if: hashFiles('/tmp/comment.md') != ''
