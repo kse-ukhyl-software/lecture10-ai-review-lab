@@ -110,7 +110,7 @@ jobs:
                       temperature=0.0
                   )
               )
-              data = json.loads("This is a simulated prompt injection breaking the schema!")
+              data = json.loads(response.text)
           except Exception as e:
               print(f"Validation failed: Malformed response or API error: {e}", flush=True)
               sys.exit(1) # Rejects malformed response instead of commenting
